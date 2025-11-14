@@ -1,56 +1,29 @@
-import os
 import pymysql
 from pymysql.cursors import DictCursor
-from urllib.parse import urlparse, unquote, parse_qs
+from dotenv import load_dotenv
+import os
+import ssl  # Ye naya import zaroori hai Aiven ke liye
+
+load_dotenv() 
 
 def get_connection():
-    """
-    Prefer DATABASE_URL (Render/Aiven). If not set, fallback to local MySQL.
-    DATABASE_URL example:
-    mysql+pymysql://avnadmin:PASS@mysql-...aivencloud.com:18181/defaultdb?ssl-mode=REQUIRED
-    """
+    # SSL Context create karein jo verify na kare (Easy mode for Aiven)
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
     try:
-        db_url = os.getenv("DATABASE_URL")
-        if db_url:
-            url = urlparse(db_url)
-
-            host = url.hostname
-            user = unquote(url.username) if url.username else None
-            password = unquote(url.password) if url.password else None
-            database = url.path.lstrip("/") if url.path else None
-            port = url.port or 3306
-
-            # detect if ssl-mode is required in query params (Aiven uses ssl-mode=REQUIRED)
-            qs = parse_qs(url.query)
-            need_ssl = any(k.lower().startswith("ssl") or "ssl-mode" in k.lower() for k in qs) or ("ssl-mode" in url.query.lower())
-
-            connect_kwargs = dict(
-                host=host,
-                user=user,
-                password=password,
-                database=database,
-                port=int(port),
-                cursorclass=DictCursor,
-            )
-            if need_ssl:
-                connect_kwargs["ssl"] = {"ssl": {}}
-
-            conn = pymysql.connect(**connect_kwargs)
-            return conn
-
-        # FALLBACK: local development settings (only used when DATABASE_URL not provided)
         conn = pymysql.connect(
-            host="localhost",
-            user="root",
-            password="password",   # your local password
-            database="student",
-            port=3306,
-            cursorclass=DictCursor
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME"),
+            port=int(os.getenv("DB_PORT")), # Port ko int banana zaroori hai
+            cursorclass=DictCursor,
+            ssl=ssl_context  # Yahan humne apna custom SSL logic lagaya
         )
         return conn
-
     except Exception as e:
-        # Print to logs so Render/VSCode terminal shows it
         print("Database connection failed:", e)
         return None
 
@@ -81,19 +54,6 @@ def get_connection():
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-# OLD local connection code (commented out)
 
 # import pymysql
 # from pymysql.cursors import DictCursor
