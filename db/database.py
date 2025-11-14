@@ -1,41 +1,114 @@
 import os
 import pymysql
 from pymysql.cursors import DictCursor
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 def get_connection():
+    """
+    Prefer DATABASE_URL (Render/Aiven). If not set, fallback to local MySQL.
+    DATABASE_URL example:
+    mysql+pymysql://avnadmin:PASS@mysql-...aivencloud.com:18181/defaultdb?ssl-mode=REQUIRED
+    """
     try:
         db_url = os.getenv("DATABASE_URL")
-        if not db_url:
-            raise Exception("DATABASE_URL environment variable not found")
+        if db_url:
+            url = urlparse(db_url)
 
-        # parse the URL (supports mysql:// and mysql+pymysql://)
-        url = urlparse(db_url)
+            host = url.hostname
+            user = unquote(url.username) if url.username else None
+            password = unquote(url.password) if url.password else None
+            database = url.path.lstrip("/") if url.path else None
+            port = url.port or 3306
 
-        # extract values and unquote percent-encoded parts
-        host = url.hostname
-        user = unquote(url.username) if url.username else None
-        password = unquote(url.password) if url.password else None
-        database = url.path.lstrip("/") if url.path else None
-        port = url.port or 3306
+            # detect if ssl-mode is required in query params (Aiven uses ssl-mode=REQUIRED)
+            qs = parse_qs(url.query)
+            need_ssl = any(k.lower().startswith("ssl") or "ssl-mode" in k.lower() for k in qs) or ("ssl-mode" in url.query.lower())
 
-        if not all([host, user, password, database]):
-            raise Exception("DATABASE_URL seems incomplete (host/user/password/database required)")
+            connect_kwargs = dict(
+                host=host,
+                user=user,
+                password=password,
+                database=database,
+                port=int(port),
+                cursorclass=DictCursor,
+            )
+            if need_ssl:
+                connect_kwargs["ssl"] = {"ssl": {}}
 
-        # Aiven requires SSL — pass a minimal ssl dict (PyMySQL accepts this)
+            conn = pymysql.connect(**connect_kwargs)
+            return conn
+
+        # FALLBACK: local development settings (only used when DATABASE_URL not provided)
         conn = pymysql.connect(
-            host=host,
-            user=user,
-            password=password,
-            database=database,
-            port=int(port),
-            cursorclass=DictCursor,
-            ssl={"ssl": {}}   # enable SSL (Aiven requires)
+            host="localhost",
+            user="root",
+            password="password",   # your local password
+            database="student",
+            port=3306,
+            cursorclass=DictCursor
         )
-
         return conn
 
     except Exception as e:
-        # print for logs (Render logs will show this)
+        # Print to logs so Render/VSCode terminal shows it
         print("Database connection failed:", e)
         return None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# OLD local connection code (commented out)
+
+# import pymysql
+# from pymysql.cursors import DictCursor
+
+# def get_connection():
+#     try:
+#         conn = pymysql.connect(
+#             host="localhost",
+#             user="root",
+#             password="password",
+#             database = "student",
+#             port=3306,
+#             cursorclass=DictCursor
+#         )
+#         return conn
+#     except Exception as e:
+#         print("Database connection failed:", e)
+#         return None
