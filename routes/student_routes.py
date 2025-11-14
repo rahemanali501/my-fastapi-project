@@ -234,29 +234,96 @@ def get_all_students(request: Request):
 
 
 
-# # API to DELETE Student
+# 4. UPDATE Student with optional photo replacement
+@router.put("/students/{student_id}")
+def update_student(student_id: int,
+                   name: str = Form(None),
+                   email: str = Form(None),
+                   gender: str = Form(None),
+                   date_of_birth: str = Form(None),
+                   photo: UploadFile = File(None)):
+    conn = get_connection()
+    if not conn: raise HTTPException(500, "DB failed")
+    cur = conn.cursor()
+    # get old photo
+    cur.execute("SELECT photo FROM std WHERE id=%s", (student_id,))
+    row = cur.fetchone()
+    if not row: raise HTTPException(404, "Not found")
+    old_photo = (row.get("photo") if isinstance(row, dict) else row[0])
+
+    # save new photo first (if provided)
+    new_name = None
+    if photo:
+        new_name = f"{student_id}_{os.path.basename(photo.filename)}"
+        path = os.path.join(UPLOAD_DIR, new_name)
+        try:
+            with open(path, "wb") as f: shutil.copyfileobj(photo.file, f)
+        except:
+            if os.path.exists(path): os.remove(path)
+            raise HTTPException(500, "Failed to save photo")
+
+    # build update
+    parts, vals = [], []
+    for k,v in (("name", name), ("email", email), ("gender", gender), ("date_of_birth", date_of_birth)):
+        if v is not None:
+            parts.append(f"{k}=%s"); vals.append(v)
+    if new_name:
+        parts.append("photo=%s"); vals.append(new_name)
+    if not parts:
+        raise HTTPException(400, "No fields to update")
+    vals.append(student_id)
+    try:
+        cur.execute(f"UPDATE std SET {', '.join(parts)} WHERE id=%s", tuple(vals))
+        conn.commit()
+    except:
+        conn.rollback()
+        if new_name:
+            try: os.remove(os.path.join(UPLOAD_DIR, new_name))
+            except: pass
+        raise HTTPException(500, "DB update failed")
+
+    # remove old file if replaced
+    if new_name and old_photo:
+        try:
+            p = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
+            if os.path.exists(p): os.remove(p)
+        except: pass
+
+    cur.close(); conn.close()
+    return {"Message":"Updated","id":student_id}
+
+
+
+
+# Minimal DELETE (deletes DB row and photo file)
 @router.delete("/students/{student_id}")
 def delete_student(student_id: int):
     conn = get_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            query = "DELETE FROM std WHERE id = %s"
-            cursor.execute(query, (student_id,))
-            conn.commit()
+    if not conn: raise HTTPException(500, "DB failed")
+    cur = conn.cursor()
+    cur.execute("SELECT photo FROM std WHERE id=%s", (student_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close(); conn.close()
+        raise HTTPException(404, "Not found")
+    old_photo = (row.get("photo") if isinstance(row, dict) else row[0])
 
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Student not found")
-            
-            return {"Message": "Student Deleted Successfully","id": student_id }
-        
-        except Exception as e:
-            conn.rollback()
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            cursor.close()
-            conn.close()
-    raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        cur.execute("DELETE FROM std WHERE id=%s", (student_id,))
+        conn.commit()
+        # delete file
+        if old_photo:
+            try:
+                fp = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
+                if os.path.exists(fp): os.remove(fp)
+            except: pass
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, "Delete failed")
+    finally:
+        cur.close(); conn.close()
+
+    return {"Message":"Deleted","id":student_id}
 
 
 
