@@ -92,10 +92,9 @@ def get_student(student_id: int, request: Request):
     if not conn:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
-    # db/database.py mein DictCursor set kiya hai, isliye cursor() hi kaafi hai
     cursor = conn.cursor() 
     try:
-        # `std` par backticks add kiye gaye
+
         cursor.execute(
             "SELECT id, name, email, gender, date_of_birth, photo FROM `std` WHERE id=%s",
             (student_id,)
@@ -107,8 +106,7 @@ def get_student(student_id: int, request: Request):
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
 
-        # os.path.exists() check HATA DIYA GAYA
-        # Ab hum hamesha URL banayenge agar database mein photo hai
+ 
         photo_url = None
         photo_filename = student.get("photo") # dict se photo lein
         
@@ -117,14 +115,14 @@ def get_student(student_id: int, request: Request):
             base = str(request.base_url).rstrip("/")
             photo_url = f"{base}/uploads/{safe_name}"
 
-        # response mein photo_url add karein
+  
         student["photo_url"] = photo_url
         
-        # date_of_birth ko string mein convert karein (agar None nahi hai)
+
         if student.get("date_of_birth"):
             student["date_of_birth"] = str(student["date_of_birth"])
 
-        return student # Poora student object (dict) return karein
+        return student 
 
     except HTTPException:
         raise
@@ -141,7 +139,7 @@ def get_student(student_id: int, request: Request):
 
 
 # ==========================================
-# 3. GET All Students (FIXED)
+# 3. GET All Students
 # ==========================================
 @router.get("/students")
 def get_all_students(request: Request):
@@ -149,16 +147,16 @@ def get_all_students(request: Request):
     if not conn:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
-    cursor = conn.cursor() # DictCursor yahan bhi apply hoga
+    cursor = conn.cursor()
     try:
-        # `std` par backticks add kiye gaye
+
         cursor.execute("SELECT id, name, email, gender, date_of_birth, photo FROM `std`")
-        students = cursor.fetchall() # Ye list of dicts return karega
+        students = cursor.fetchall()
 
         base = str(request.base_url).rstrip("/")
 
         for student in students:
-            # os.path.exists() check HATA DIYA GAYA
+           
             photo_url = None
             photo_filename = student.get("photo")
             
@@ -166,9 +164,9 @@ def get_all_students(request: Request):
                 safe_name = os.path.basename(str(photo_filename))
                 photo_url = f"{base}/uploads/{safe_name}"
 
-            student["photo_url"] = photo_url # dict mein naya key add karein
+            student["photo_url"] = photo_url 
             
-            # date_of_birth ko string mein convert karein
+            
             if student.get("date_of_birth"):
                 student["date_of_birth"] = str(student["date_of_birth"])
 
@@ -184,11 +182,11 @@ def get_all_students(request: Request):
 
 
 # ==========================================
-# 4. UPDATE Student (FIXED)
+# 4. UPDATE Student
 # ==========================================
 @router.put("/students/{student_id}")
 def update_student(student_id: int,
-                   request: Request, # Request ko add karein taaki base_url mile
+                   request: Request, 
                    name: str = Form(None),
                    email: str = Form(None),
                    gender: str = Form(None),
@@ -198,11 +196,11 @@ def update_student(student_id: int,
     if not conn: raise HTTPException(500, "DB failed")
     cur = conn.cursor()
     
-    # `std` par backticks add kiye gaye
+
     cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
     row = cur.fetchone()
     if not row: raise HTTPException(404, "Not found")
-    old_photo = row.get("photo") # DictCursor se data lein
+    old_photo = row.get("photo") 
 
     new_name = None
     if photo and photo.filename: 
@@ -232,7 +230,7 @@ def update_student(student_id: int,
     vals.append(student_id)
     
     try:
-        # `std` par backticks add kiye gaye
+      
         cur.execute(f"UPDATE `std` SET {', '.join(parts)} WHERE id=%s", tuple(vals))
         conn.commit()
     except:
@@ -248,11 +246,11 @@ def update_student(student_id: int,
             if os.path.exists(p): os.remove(p)
         except: pass
 
-    # Updated data ko fetch karein
+   
     cur.execute("SELECT * FROM `std` WHERE id=%s", (student_id,))
     updated_student = cur.fetchone()
     
-    # URL add karein
+    
     url = str(request.base_url).rstrip("/")
     photo_filename = updated_student.get("photo")
     if photo_filename:
@@ -271,7 +269,7 @@ def update_student(student_id: int,
 
 
 # ==========================================
-# 5. DELETE Student (FIXED)
+# 5. DELETE Student 
 # ==========================================
 @router.delete("/students/{student_id}")
 def delete_student(student_id: int):
@@ -279,16 +277,14 @@ def delete_student(student_id: int):
     if not conn: raise HTTPException(500, "DB failed")
     cur = conn.cursor()
     
-    # `std` par backticks add kiye gaye
     cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
     row = cur.fetchone()
     if not row:
         cur.close(); conn.close()
         raise HTTPException(404, "Not found")
-    old_photo = row.get("photo") # DictCursor se data lein
+    old_photo = row.get("photo") 
 
     try:
-        # `std` par backticks add kiye gaye
         cur.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
         conn.commit()
         if old_photo:
