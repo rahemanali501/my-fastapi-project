@@ -1,7 +1,6 @@
 import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from db.database import Base, engine 
 # Make sure to import your student router
 from routes import student_routes 
 
