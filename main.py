@@ -1,29 +1,42 @@
+import os
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles 
-import os  
+from fastapi.staticfiles import StaticFiles
+from db.database import Base, engine 
+# Make sure to import your student router
+from routes import student_routes 
 
+# Create all database tables (if not already created)
+# Base.metadata.create_all(bind=engine)
 
-from routes.student_routes import router as student_router
+app = FastAPI(
+    title="Student API",
+    description="API for managing students",
+    version="1.0.0"
+)
 
+# === YAHAN HAI FIX (HERE IS THE FIX) ===
 
-UPLOAD_DIR = "uploads"  
-# Ensure uploads directory exists
+# 1. Define the uploads directory path
+UPLOAD_DIR = "uploads"
+# Create the directory if it doesn't exist on the server
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# FastAPI App Initialization
-app = FastAPI(title="College Management System API")
-
-
+# 2. "Mount" the directory
+# This tells FastAPI: "Any URL that starts with '/uploads' 
+# should be served as a static file from the directory named 'uploads'."
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
+# === FIX ENDS HERE ===
 
-app.include_router(student_router, prefix="/api")
 
-# --- Root URL (Home Page) ---
+# Include your student router
+# Make sure the prefix is correct
+app.include_router(student_routes.router, prefix="/api")
+
 
 @app.get("/")
-def home():
-    return {"message": "Welcome to College Management System API"}
+def read_root():
+    return {"message": "Welcome to the Student API!"}
 
 
 
