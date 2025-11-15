@@ -28,10 +28,9 @@ def add_student(
     try:
         # Insert student first (photo = None)
         cursor.execute(
-      "INSERT INTO `std` (name,email,gender,date_of_birth,photo) VALUES (%s,%s,%s,%s,%s)",
-       (name, email, gender, date_of_birth, None)
-)
-        
+            "INSERT INTO `std` (name,email,gender,date_of_birth,photo) VALUES (%s,%s,%s,%s,%s)",
+            (name, email, gender, date_of_birth, None)
+    )
         conn.commit()
         student_id = cursor.lastrowid
 
@@ -48,12 +47,12 @@ def add_student(
             except:
                 
                 # cleanup DB row if file save fails
-                cursor.execute("DELETE FROM std WHERE id=%s", (student_id,))
+                cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
                 conn.commit()
                 raise HTTPException(500, "Failed to save photo")
 
             # update student record with photo filename in photo column
-            cursor.execute("UPDATE std SET photo=%s WHERE id=%s", (saved_filename, student_id))
+            cursor.execute("UPDATE `std` SET photo=%s WHERE id=%s", (saved_filename, student_id))
             conn.commit()
 
         # Response
@@ -77,7 +76,7 @@ def add_student(
 
         # remove row if inserted
         if student_id:
-            cursor.execute("DELETE FROM std WHERE id=%s", (student_id,))
+            cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
             conn.commit()
 
         raise HTTPException(500, str(e))
