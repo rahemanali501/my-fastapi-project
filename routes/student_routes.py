@@ -28,9 +28,10 @@ def add_student(
     try:
         # Insert student first (photo = None)
         cursor.execute(
-            "INSERT INTO std (name,email,gender,date_of_birth,photo) VALUES (%s,%s,%s,%s,%s)",
-            (name, email, gender, date_of_birth, None)
-        )
+      "INSERT INTO `std` (name,email,gender,date_of_birth,photo) VALUES (%s,%s,%s,%s,%s)",
+       (name, email, gender, date_of_birth, None)
+)
+        
         conn.commit()
         student_id = cursor.lastrowid
 
