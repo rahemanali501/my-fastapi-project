@@ -7,7 +7,6 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# 1. ADD Student with photo upload
 @router.post("/students")
 def add_student(
     request: Request,
@@ -26,10 +25,10 @@ def add_student(
     student_id = None
 
     try:
-        # Insert student first (photo = None)
+        # IMPORTANT: pass None for photo on initial insert (don't pass the UploadFile object)
         cursor.execute(
-            "INSERT INTO std (name,email,gender,date_of_birth,photo) VALUES (%s,%s,%s,%s,%s)",
-            (name, email, gender, date_of_birth, photo)
+            "INSERT INTO `std` (name, email, gender, date_of_birth, photo) VALUES (%s, %s, %s, %s, %s)",
+            (name, email, gender, date_of_birth, None)   # <-- photo is None here
         )
         conn.commit()
         student_id = cursor.lastrowid
@@ -40,19 +39,25 @@ def add_student(
             save_path = os.path.join(UPLOAD_DIR, saved_filename)
 
             try:
-
                 # save file into uploads folder
                 with open(save_path, "wb") as f:
+                    # make sure file pointer is at start
+                    photo.file.seek(0)
                     shutil.copyfileobj(photo.file, f)
-            except:
-                
+            except Exception as save_exc:
                 # cleanup DB row if file save fails
-                cursor.execute("DELETE FROM std WHERE id=%s", (student_id,))
+                cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
                 conn.commit()
-                raise HTTPException(500, "Failed to save photo")
+                raise HTTPException(500, "Failed to save photo") from save_exc
+            finally:
+                # close the upload file object
+                try:
+                    photo.file.close()
+                except:
+                    pass
 
             # update student record with photo filename in photo column
-            cursor.execute("UPDATE std SET photo=%s WHERE id=%s", (saved_filename, student_id))
+            cursor.execute("UPDATE `std` SET photo=%s WHERE id=%s", (saved_filename, student_id))
             conn.commit()
 
         # Response
@@ -61,7 +66,6 @@ def add_student(
             "Message": "Student Added Successfully",
             "id": student_id,
             "photo": saved_filename,
-            # make full URL to access the photo in browser if uploaded if not then set to None
             "photo_url": f"{url}/uploads/{saved_filename}" if saved_filename else None
         }
 
@@ -76,14 +80,16 @@ def add_student(
 
         # remove row if inserted
         if student_id:
-            cursor.execute("DELETE FROM std WHERE id=%s", (student_id,))
+            cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
             conn.commit()
 
+        # raise HTTP error with the real exception message for debugging (you can mask this in production)
         raise HTTPException(500, str(e))
 
     finally:
         cursor.close()
         conn.close()
+
 
 
 # 2. GET One Student with photo URL
