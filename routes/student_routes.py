@@ -1,13 +1,73 @@
-import os, shutil
+# students_router.py
+import os
+import shutil
+import tempfile
+import logging
 from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+from typing import Optional
 from db.database import get_connection
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 router = APIRouter()
-UPLOAD_DIR = "uploads"
+
+# Use env var so you can change it in Render dashboard
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# 1. POST (YE CODE AAPKA PEHLE SE SAHI THA)
+def save_upload(photo: UploadFile, student_id: int) -> str:
+    """
+    Save UploadFile safely into UPLOAD_DIR and return saved filename.
+    Uses a temp file + atomic replace to avoid partial writes.
+    """
+    ext = os.path.basename(photo.filename) if photo and photo.filename else f"{student_id}"
+    saved_name = f"{student_id}_{ext}"
+    target_path = os.path.join(UPLOAD_DIR, saved_name)
+
+    # create temp file inside upload dir
+    fd, tmp = tempfile.mkstemp(dir=UPLOAD_DIR)
+    os.close(fd)
+    try:
+        with open(tmp, "wb") as f:
+            photo.file.seek(0)
+            shutil.copyfileobj(photo.file, f)
+        # atomic move
+        os.replace(tmp, target_path)
+        return saved_name
+    finally:
+        # ensure temp removed if still exists
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        # close upstream file if still open
+        try:
+            photo.file.close()
+        except Exception:
+            pass
+
+
+@router.get("/debug-files")
+def debug_files():
+    """Quick debug to inspect upload dir and cwd — use in Render logs to see what's happening."""
+    try:
+        up = os.path.abspath(UPLOAD_DIR)
+        return {
+            "UPLOAD_DIR": up,
+            "exists": os.path.exists(up),
+            "cwd": os.getcwd(),
+            "ls_cwd": os.listdir(os.getcwd())[:100],
+            "ls_upload": os.listdir(up)[:100] if os.path.exists(up) else None,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# 1. POST - add student
 @router.post("/students")
 def add_student(
     request: Request,
@@ -15,45 +75,37 @@ def add_student(
     email: str = Form(...),
     gender: str = Form(...),
     date_of_birth: str = Form(...),
-    photo: UploadFile = File(None)
+    photo: UploadFile = File(None),
 ):
     conn = get_connection()
     if not conn:
         raise HTTPException(500, "Database connection failed")
 
-    # cursor() ko dictionary=True ke saath istemaal karein (agar get_connection nahi karta)
-    # Taaki data { 'key': 'value' } format mein mile
-    # Hum assume kar rahe hain ki aapne db/database.py mein DictCursor set kar diya hai
-    cursor = conn.cursor() 
-    saved_filename = None
+    cursor = conn.cursor()
+    saved_filename: Optional[str] = None
     student_id = None
 
     try:
         cursor.execute(
             "INSERT INTO `std` (name, email, gender, date_of_birth, photo) VALUES (%s, %s, %s, %s, %s)",
-            (name, email, gender, date_of_birth, None)
+            (name, email, gender, date_of_birth, None),
         )
         conn.commit()
         student_id = cursor.lastrowid
 
-        if photo and photo.filename:
-            saved_filename = f"{student_id}_{os.path.basename(photo.filename)}"
-            save_path = os.path.join(UPLOAD_DIR, saved_filename)
-
+        if photo and getattr(photo, "filename", None):
             try:
-                with open(save_path, "wb") as f:
-                    photo.file.seek(0)
-                    shutil.copyfileobj(photo.file, f)
+                saved_filename = save_upload(photo, student_id)
             except Exception as save_exc:
-                cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
-                conn.commit()
-                raise HTTPException(500, "Failed to save photo") from save_exc
-            finally:
+                # rollback DB row and raise
                 try:
-                    photo.file.close()
-                except:
-                    pass
+                    cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                raise HTTPException(status_code=500, detail="Failed to save photo") from save_exc
 
+            # store filename in DB
             cursor.execute("UPDATE `std` SET photo=%s WHERE id=%s", (saved_filename, student_id))
             conn.commit()
 
@@ -61,86 +113,94 @@ def add_student(
         return {
             "Message": "Student Added Successfully",
             "id": student_id,
-            "name": name, # Return name
-            "email": email, # Return email
+            "name": name,
+            "email": email,
             "photo": saved_filename,
-            "photo_url": f"{url}/uploads/{saved_filename}" if saved_filename else None
+            "photo_url": f"{url}/uploads/{saved_filename}" if saved_filename else None,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         conn.rollback()
+        # cleanup any file written
         if saved_filename:
             fp = os.path.join(UPLOAD_DIR, saved_filename)
-            if os.path.exists(fp):
-                os.remove(fp)
+            try:
+                if os.path.exists(fp):
+                    os.remove(fp)
+            except Exception:
+                pass
+        # remove DB row if created
         if student_id:
-            cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
-            conn.commit()
-        raise HTTPException(500, str(e))
-
+            try:
+                cursor.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        logger.exception("Error adding student")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
-        cursor.close()
-        conn.close()
+        try:
+            cursor.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
-# ==========================================
-# 2. GET One Student (FIXED)
-# ==========================================
+# 2. GET one student
 @router.get("/students/{student_id}")
 def get_student(student_id: int, request: Request):
     conn = get_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Database connection failed")
 
-    cursor = conn.cursor() 
+    cursor = conn.cursor()
     try:
-
         cursor.execute(
             "SELECT id, name, email, gender, date_of_birth, photo FROM `std` WHERE id=%s",
-            (student_id,)
+            (student_id,),
         )
-        # fetchone() ab dictionary return karega
         student = cursor.fetchone()
-        print("DEBUG raw row from DB:", student)
+        logger.debug("DEBUG raw row from DB: %s", student)
 
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
 
- 
         photo_url = None
-        photo_filename = student.get("photo") # dict se photo lein
-        
+        photo_filename = student.get("photo")
         if photo_filename:
             safe_name = os.path.basename(str(photo_filename))
             base = str(request.base_url).rstrip("/")
             photo_url = f"{base}/uploads/{safe_name}"
 
-  
         student["photo_url"] = photo_url
-        
 
         if student.get("date_of_birth"):
             student["date_of_birth"] = str(student["date_of_birth"])
 
-        return student 
+        return student
 
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print("TRACEBACK:", traceback.format_exc())
+        logger.exception("Error fetching student")
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
-        if cursor is not None:
-            try: cursor.close()
-            except: pass
-        try: conn.close()
-        except: pass
+        try:
+            cursor.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
-# ==========================================
-# 3. GET All Students
-# ==========================================
+# 3. GET all students
 @router.get("/students")
 def get_all_students(request: Request):
     conn = get_connection()
@@ -149,156 +209,166 @@ def get_all_students(request: Request):
 
     cursor = conn.cursor()
     try:
-
         cursor.execute("SELECT id, name, email, gender, date_of_birth, photo FROM `std`")
         students = cursor.fetchall()
 
         base = str(request.base_url).rstrip("/")
 
         for student in students:
-           
             photo_url = None
             photo_filename = student.get("photo")
-            
             if photo_filename:
                 safe_name = os.path.basename(str(photo_filename))
                 photo_url = f"{base}/uploads/{safe_name}"
-
-            student["photo_url"] = photo_url 
-            
-            
+            student["photo_url"] = photo_url
             if student.get("date_of_birth"):
                 student["date_of_birth"] = str(student["date_of_birth"])
 
-        return {
-            "count": len(students),
-            "students": students
-        }
+        return {"count": len(students), "students": students}
     except Exception as e:
+        logger.exception("Error fetching students")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        cursor.close()
-        conn.close()
-
-
-# ==========================================
-# 4. UPDATE Student
-# ==========================================
-@router.put("/students/{student_id}")
-def update_student(student_id: int,
-                   request: Request, 
-                   name: str = Form(None),
-                   email: str = Form(None),
-                   gender: str = Form(None),
-                   date_of_birth: str = Form(None),
-                   photo: UploadFile = File(None)):
-    conn = get_connection()
-    if not conn: raise HTTPException(500, "DB failed")
-    cur = conn.cursor()
-    
-
-    cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
-    row = cur.fetchone()
-    if not row: raise HTTPException(404, "Not found")
-    old_photo = row.get("photo") 
-
-    new_name = None
-    if photo and photo.filename: 
-        new_name = f"{student_id}_{os.path.basename(photo.filename)}"
-        path = os.path.join(UPLOAD_DIR, new_name)
         try:
-            with open(path, "wb") as f: 
-                photo.file.seek(0)
-                shutil.copyfileobj(photo.file, f)
+            cursor.close()
         except:
-            if os.path.exists(path): os.remove(path)
-            raise HTTPException(500, "Failed to save photo")
-        finally:
-            if photo: 
-                try: photo.file.close()
-                except: pass
-
-    parts, vals = [], []
-    for k,v in (("name", name), ("email", email), ("gender", gender), ("date_of_birth", date_of_birth)):
-        if v is not None:
-            parts.append(f"{k}=%s"); vals.append(v)
-    if new_name:
-        parts.append("photo=%s"); vals.append(new_name)
-    if not parts:
-        cur.close(); conn.close()
-        raise HTTPException(400, "No fields to update")
-    vals.append(student_id)
-    
-    try:
-      
-        cur.execute(f"UPDATE `std` SET {', '.join(parts)} WHERE id=%s", tuple(vals))
-        conn.commit()
-    except:
-        conn.rollback()
-        if new_name:
-            try: os.remove(os.path.join(UPLOAD_DIR, new_name))
-            except: pass
-        raise HTTPException(500, "DB update failed")
-
-    if new_name and old_photo:
+            pass
         try:
-            p = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
-            if os.path.exists(p): os.remove(p)
-        except: pass
+            conn.close()
+        except:
+            pass
 
-   
-    cur.execute("SELECT * FROM `std` WHERE id=%s", (student_id,))
-    updated_student = cur.fetchone()
-    
-    
-    url = str(request.base_url).rstrip("/")
-    photo_filename = updated_student.get("photo")
-    if photo_filename:
-        updated_student["photo_url"] = f"{url}/uploads/{os.path.basename(photo_filename)}"
-    else:
-        updated_student["photo_url"] = None
-    
-    if updated_student.get("date_of_birth"):
+
+# 4. UPDATE student
+@router.put("/students/{student_id}")
+def update_student(
+    student_id: int,
+    request: Request,
+    name: str = Form(None),
+    email: str = Form(None),
+    gender: str = Form(None),
+    date_of_birth: str = Form(None),
+    photo: UploadFile = File(None),
+):
+    conn = get_connection()
+    if not conn:
+        raise HTTPException(500, "DB failed")
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Not found")
+        old_photo = row.get("photo")
+
+        new_name = None
+        if photo and getattr(photo, "filename", None):
+            try:
+                new_name = save_upload(photo, student_id)
+            except Exception as e:
+                logger.exception("Failed to save new photo")
+                raise HTTPException(500, "Failed to save photo")
+
+        parts, vals = [], []
+        for k, v in (("name", name), ("email", email), ("gender", gender), ("date_of_birth", date_of_birth)):
+            if v is not None:
+                parts.append(f"{k}=%s")
+                vals.append(v)
+        if new_name:
+            parts.append("photo=%s")
+            vals.append(new_name)
+        if not parts:
+            raise HTTPException(400, "No fields to update")
+
+        vals.append(student_id)
+
+        try:
+            cur.execute(f"UPDATE `std` SET {', '.join(parts)} WHERE id=%s", tuple(vals))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if new_name:
+                try:
+                    os.remove(os.path.join(UPLOAD_DIR, new_name))
+                except Exception:
+                    pass
+            raise HTTPException(500, "DB update failed")
+
+        # remove old photo file (only after DB updated)
+        if new_name and old_photo:
+            try:
+                p = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
+        cur.execute("SELECT id, name, email, gender, date_of_birth, photo FROM `std` WHERE id=%s", (student_id,))
+        updated_student = cur.fetchone()
+
+        url = str(request.base_url).rstrip("/")
+        photo_filename = updated_student.get("photo")
+        if photo_filename:
+            updated_student["photo_url"] = f"{url}/uploads/{os.path.basename(photo_filename)}"
+        else:
+            updated_student["photo_url"] = None
+
+        if updated_student.get("date_of_birth"):
             updated_student["date_of_birth"] = str(updated_student["date_of_birth"])
 
-    cur.close(); conn.close()
-    return {
-        "Message":"Updated",
-        "student": updated_student
-    }
+        return {"Message": "Updated", "student": updated_student}
+    finally:
+        try:
+            cur.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
-# ==========================================
-# 5. DELETE Student 
-# ==========================================
+# 5. DELETE student
 @router.delete("/students/{student_id}")
 def delete_student(student_id: int):
     conn = get_connection()
-    if not conn: raise HTTPException(500, "DB failed")
+    if not conn:
+        raise HTTPException(500, "DB failed")
     cur = conn.cursor()
-    
-    cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close(); conn.close()
-        raise HTTPException(404, "Not found")
-    old_photo = row.get("photo") 
 
     try:
-        cur.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
-        conn.commit()
-        if old_photo:
-            try:
-                fp = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
-                if os.path.exists(fp): os.remove(fp)
-            except: pass
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(500, "Delete failed")
-    finally:
-        cur.close(); conn.close()
+        cur.execute("SELECT photo FROM `std` WHERE id=%s", (student_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Not found")
+        old_photo = row.get("photo")
 
-    return {"Message":"Deleted","id":student_id, "deleted_photo": old_photo}
+        try:
+            cur.execute("DELETE FROM `std` WHERE id=%s", (student_id,))
+            conn.commit()
+            # remove physical file if exists
+            if old_photo:
+                try:
+                    fp = os.path.join(UPLOAD_DIR, os.path.basename(str(old_photo)))
+                    if os.path.exists(fp):
+                        os.remove(fp)
+                except Exception:
+                    pass
+        except Exception:
+            conn.rollback()
+            raise HTTPException(500, "Delete failed")
+
+        return {"Message": "Deleted", "id": student_id, "deleted_photo": old_photo}
+    finally:
+        try:
+            cur.close()
+        except:
+            pass
+        try:
+            conn.close()
+        except:
+            pass
 
 
 
